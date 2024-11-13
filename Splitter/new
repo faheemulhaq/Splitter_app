@@ -1,0 +1,122 @@
+import streamlit as st
+import pdfkit
+from docx import Document
+import pandas as pd
+from bs4 import BeautifulSoup
+import json
+import fitz  # PyMuPDF
+import matplotlib.pyplot as plt
+from langchain import OpenAI, PromptTemplate
+from langchain.chains import LLMChain
+import os
+
+# Streamlit app setup
+st.title("Document to PDF Converter and Analyzer")
+st.write("Upload a document (.docx, .xlsx, or .html) to convert it to PDF, analyze it, and view content ratios.")
+
+# Streamlit file uploader
+uploaded_file = st.file_uploader("Upload your file", type=["docx", "xlsx", "html"])
+
+def convert_docx_to_pdf(docx_path, pdf_path):
+    doc = Document(docx_path)
+    pdf_text = ""
+    for para in doc.paragraphs:
+        pdf_text += para.text + "\n"
+    
+    with open("temp.html", "w") as f:
+        f.write(f"<html><body><pre>{pdf_text}</pre></body></html>")
+    
+    pdfkit.from_file("temp.html", pdf_path)
+    os.remove("temp.html")
+
+def convert_xlsx_to_pdf(xlsx_path, pdf_path):
+    df = pd.read_excel(xlsx_path)
+    html_content = df.to_html()
+    
+    with open("temp.html", "w") as f:
+        f.write(html_content)
+    
+    pdfkit.from_file("temp.html", pdf_path)
+    os.remove("temp.html")
+
+def convert_html_to_pdf(html_path, pdf_path):
+    pdfkit.from_file(html_path, pdf_path)
+
+def convert_to_pdf(input_path, output_pdf):
+    if input_path.endswith(".docx"):
+        convert_docx_to_pdf(input_path, output_pdf)
+    elif input_path.endswith(".xlsx"):
+        convert_xlsx_to_pdf(input_path, output_pdf)
+    elif input_path.endswith(".html"):
+        convert_html_to_pdf(input_path, output_pdf)
+    else:
+        raise ValueError("Unsupported file format")
+
+def extract_content_from_pdf(pdf_path):
+    content = {"text": "", "images": 0, "large_caps": 0, "small_caps": 0}
+    with fitz.open(pdf_path) as pdf:
+        for page in pdf:
+            content["text"] += page.get_text("text")
+            content["images"] += len(page.get_images())
+    
+    words = content["text"].split()
+    for word in words:
+        if word.isupper() and len(word) > 1:
+            content["large_caps"] += 1
+        elif word.islower():
+            content["small_caps"] += 1
+    
+    return content
+
+def analyze_content_with_langchain(content_json):
+    openai_key = "your-openai-api-key"  # replace with your actual OpenAI API key
+    os.environ["OPENAI_API_KEY"] = openai_key
+    
+    content_text = json.dumps(content_json)
+    
+    prompt_template = PromptTemplate.from_template("Analyze this document content for ratios: {content}")
+    chain = LLMChain(llm=OpenAI(model_name="gpt-4"), prompt=prompt_template)
+    analysis = chain.run(content=content_text)
+    
+    return json.loads(analysis)  # Assuming the response is in JSON format
+
+def plot_ratios(analysis):
+    labels = ["Text", "Images", "Large Caps", "Small Caps"]
+    values = [analysis["text_ratio"], analysis["image_ratio"], analysis["large_caps_ratio"], analysis["small_caps_ratio"]]
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(labels, values, color="skyblue")
+    plt.xlabel("Content Type")
+    plt.ylabel("Ratio (%)")
+    plt.title("Content Ratios in Document")
+    st.pyplot(plt)  # Display the plot in Streamlit
+
+if uploaded_file:
+    # Save uploaded file to disk
+    input_path = uploaded_file.name
+    with open(input_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    # Convert to PDF
+    output_pdf = "output.pdf"
+    st.write("Converting document to PDF...")
+    convert_to_pdf(input_path, output_pdf)
+    st.write("PDF created successfully!")
+    
+    # Extract content and save as JSON
+    st.write("Extracting content from PDF...")
+    content = extract_content_from_pdf(output_pdf)
+    with open("output.json", "w") as f:
+        json.dump(content, f, indent=2)
+    st.write("Content extraction complete. JSON saved.")
+    
+    # Analyze content ratios using LangChain
+    st.write("Analyzing content with LLM...")
+    analysis = analyze_content_with_langchain(content)
+    
+    # Display analysis results and plot ratios
+    st.write("Analysis Results:", analysis)
+    st.write("Generating bar chart for content ratios...")
+    plot_ratios(analysis)
+else:
+    st.write("Please upload a document file to proceed.")
